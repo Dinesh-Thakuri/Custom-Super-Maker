@@ -1,4 +1,4 @@
-name: Android Super Repack + OEM Port
+name: Android Super Repack + OEM Port 
 
 on:
   workflow_dispatch:
@@ -51,6 +51,11 @@ on:
         type: string
 
       # --- Options ---
+      enable_erofs_compression:
+        description: 'Compress System.img via EROFS (Max Compression)'
+        required: true
+        type: boolean
+        default: true
       upload_to_release:
         description: 'Upload Result to Release?'
         required: true
@@ -88,7 +93,7 @@ jobs:
       run: |
         echo "==> Installing Tools..."
         sudo apt-get update -qq
-        # Android & Filesystem Tools
+        # Android & Filesystem Tools (erofs-utils is included here)
         sudo apt-get install -y -qq android-sdk-libsparse-utils tar xz-utils liblz4-tool unzip p7zip-full file wget curl megatools f2fs-tools erofs-utils cpio rsync
         # Porting Support Tools
         sudo apt-get install -y -qq unace unrar zip p7zip-rar sharutils rar uudeview mpack arj cabextract rename liblzma-dev brotli lz4 protobuf-compiler git gawk python3-pip
@@ -106,6 +111,11 @@ jobs:
         else
           echo "::error::repacksuper_lite.sh not found in repository root."
           exit 1
+        fi
+        
+        # Ensure the EROFS compress script is executable (if exists in repo)
+        if[ -f "./compress_system_img.sh" ]; then
+          chmod +x ./compress_system_img.sh
         fi
 
     # --------------------------------------------------------------------------
@@ -130,7 +140,7 @@ jobs:
            echo "::error::No device preset or URL selected." && exit 1
         fi
         
-        if [ ! -s "stock_firmware.zip" ]; then echo "::error::Download failed or empty." && exit 1; fi
+        if[ ! -s "stock_firmware.zip" ]; then echo "::error::Download failed or empty." && exit 1; fi
         
         echo "==> Extracting Super Partition..."
         # Extract AP file
@@ -177,7 +187,7 @@ jobs:
       run: |
         echo "==> GSI/ROM Download Mode."
         URL="${{ github.event.inputs.custom_system_url }}"
-        if [ -z "$URL" ]; then echo "::error::Custom System URL is required." && exit 1; fi
+        if[ -z "$URL" ]; then echo "::error::Custom System URL is required." && exit 1; fi
         
         cd work
         wget -q -O rom_package "$URL"
@@ -193,9 +203,38 @@ jobs:
         else mv rom_package custom_system.img; fi
         
         # Ensure we have the .img
-        if [ ! -f "custom_system.img" ]; then
+        if[ ! -f "custom_system.img" ]; then
            FIND=$(find . -maxdepth 2 -name "*.img" ! -name "stock_super_sparse.img" | head -n1)
            if [ -n "$FIND" ]; then mv "$FIND" custom_system.img; else echo "::error::Extraction failed." && exit 1; fi
+        fi
+
+    # --------------------------------------------------------------------------
+    # 3.5. EROFS System Image Compression
+    # --------------------------------------------------------------------------
+    - name: Compress System Image (EROFS)
+      if: github.event.inputs.enable_erofs_compression == 'true'
+      run: |
+        echo "==> EROFS Compression Enabled. Compressing custom_system.img..."
+        
+        # Download the script if it does not exist in the root repo
+        if[ ! -f "./compress_system_img.sh" ]; then
+          echo "compress_system_img.sh not found locally. Downloading from Custom-Super-Maker repository..."
+          wget -q https://raw.githubusercontent.com/minhmc2007/Custom-Super-Maker/main/compress_system_img.sh -O compress_system_img.sh
+        fi
+        
+        chmod +x compress_system_img.sh
+        
+        # Execute compression script (Usage: sudo ./script <input> <output>)
+        sudo ./compress_system_img.sh work/custom_system.img work/custom_system_compressed.img
+        
+        # Verify output and replace the original image so the next step picks it up
+        if[ -f "work/custom_system_compressed.img" ]; then
+           echo "==> Compression successful. Replacing original image..."
+           sudo rm work/custom_system.img
+           sudo mv work/custom_system_compressed.img work/custom_system.img
+        else
+           echo "::error::EROFS Compression failed! Compressed image not found."
+           exit 1
         fi
 
     # --------------------------------------------------------------------------
@@ -207,7 +246,7 @@ jobs:
         
         # 1. Verify Inputs
         if [ ! -f "work/stock_super_sparse.img" ]; then echo "::error::Stock Super Image missing."; exit 1; fi
-        if [ ! -f "work/custom_system.img" ]; then echo "::error::Custom System Image missing."; exit 1; fi
+        if[ ! -f "work/custom_system.img" ]; then echo "::error::Custom System Image missing."; exit 1; fi
         
         # 2. Execute with Sudo (Required for EROFS/Mounting)
         # Usage: sudo ./script <Source> <System> <Output>
@@ -217,7 +256,7 @@ jobs:
           work/repacked_super.img
         
         # 3. Verify Output
-        if [ ! -f "work/repacked_super.img" ]; then
+        if[ ! -f "work/repacked_super.img" ]; then
            echo "::error::Repack script finished but output file is missing."
            exit 1
         fi
